@@ -88,6 +88,7 @@ DB_PATH = os.getenv("DB_PATH", "/data/bot.db") if os.path.isdir("/data") else os
 
 FOLLOWUP_MINUTES = int(os.getenv("FOLLOWUP_MINUTES", "30"))
 QUESTION_URL = os.getenv("QUESTION_URL", "https://t.me/ym2812")
+OFFER_URL = os.getenv("OFFER_URL", "https://chisel-exception-1f4.notion.site/3a51af6e735580a191d7df9b8afda01e")
 
 WFP_ENABLED = bool(WFP_MERCHANT and WFP_SECRET)
 
@@ -337,18 +338,25 @@ async def health(request: web.Request) -> web.Response:
 
 # ------------------------------------------------------------------ keyboards
 
+def kb_extra_row() -> list:
+    """Shared bottom row: public offer + ask a question. Appended to any keyboard."""
+    return [
+        InlineKeyboardButton("Публічна оферта 📄", url=OFFER_URL),
+        InlineKeyboardButton("Задати питання ❓", url=QUESTION_URL),
+    ]
+
 def kb_followup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [buy_button("buy_129", "Оплатити Модуль 1 — 129 грн 👇")],
             [InlineKeyboardButton("Про курс — програма ℹ️", callback_data="about")],
             [buy_button("buy_699", "Купити всю програму — 699 грн 💳")],
-            [InlineKeyboardButton("Маю запитання ❓", url=QUESTION_URL)],
+            kb_extra_row(),
         ]
     )
 
 def kb_single_buy(key: str, label: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[buy_button(key, label)]])
+    return InlineKeyboardMarkup([[buy_button(key, label)], kb_extra_row()])
 
 def buy_button(key: str, label: str) -> InlineKeyboardButton:
     _, _, url = PRODUCTS[key]
@@ -418,6 +426,22 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_cached_file(
         user.id, context, "pdf_file_id", PDF_PATH, "document",
         filename="Zayavy_pro_sebe_5_shabloniv.pdf",
+    )
+
+async def cmd_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Маєш запитання? Пиши прямо тут 👉",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Задати питання ❓", url=QUESTION_URL)]]
+        ),
+    )
+
+async def cmd_oferta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Публічна оферта програми:",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Відкрити оферту 📄", url=OFFER_URL)]]
+        ),
     )
 
 async def cmd_about(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -591,6 +615,21 @@ async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 @admin_only
+async def cmd_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/files — diagnostic: show what's actually present in the deployed container."""
+    lines = [f"📂 Робоча директорія: {os.getcwd()}", ""]
+    for root_name in (".", "assets"):
+        if os.path.isdir(root_name):
+            items = sorted(os.listdir(root_name))
+            lines.append(f"{root_name}/: " + (", ".join(items) if items else "(порожньо)"))
+        else:
+            lines.append(f"{root_name}/: не існує")
+    lines.append("")
+    lines.append(f"PDF_PATH={PDF_PATH} → існує: {os.path.exists(PDF_PATH)}")
+    lines.append(f"PHOTO_PATH={PHOTO_PATH} → існує: {os.path.exists(PHOTO_PATH)}")
+    await update.message.reply_text("\n".join(lines))
+
+@admin_only
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/broadcast <текст> — send text to everyone.
     Or reply /broadcast to any message (photo, formatted text) to copy it to everyone."""
@@ -657,11 +696,14 @@ def main():
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("about", cmd_about))
+    app.add_handler(CommandHandler("question", cmd_question))
+    app.add_handler(CommandHandler("oferta", cmd_oferta))
     app.add_handler(CommandHandler("grant", cmd_grant))
     app.add_handler(CommandHandler("link", cmd_link))
     app.add_handler(CommandHandler("revoke", cmd_revoke))
     app.add_handler(CommandHandler("users", cmd_users))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
+    app.add_handler(CommandHandler("files", cmd_files))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(PreCheckoutQueryHandler(on_precheckout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_successful_payment))
