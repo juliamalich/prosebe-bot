@@ -3,8 +3,8 @@ Telegram bot for the "Заяви про себе" funnel.
 
 Flow:
   /start  -> welcome message + PDF guide
-  +30 min -> photo + Module 1 offer for 129 грн
-             (buttons: buy 129 / about / buy full 699 / question -> @ym2812)
+  +30 min -> photo + program offer for 699 грн
+             (buttons: buy / about / offer / question -> @ym2812)
   /about  -> full program description + buy 699 грн
   payment -> user gets a personal one-time invite link to the closed channel
 
@@ -12,7 +12,7 @@ Payments (priority order):
   1. WayForPay API (WFP_MERCHANT + WFP_SECRET set) -> bot creates an invoice,
      WayForPay calls our webhook on success, access granted automatically.
   2. Native Telegram Payments (PROVIDER_TOKEN set).
-  3. Static payment links (PAY_URL_129 / PAY_URL_699) + manual /grant.
+  3. Static payment link (PAY_URL_699) + manual /grant.
 
 Closed channel:
   Set CHANNEL_ID and make the bot an ADMIN of the channel with the
@@ -89,13 +89,14 @@ DB_PATH = os.getenv("DB_PATH", "/data/bot.db") if os.path.isdir("/data") else os
 
 FOLLOWUP_MINUTES = int(os.getenv("FOLLOWUP_MINUTES", "30"))
 QUESTION_URL = os.getenv("QUESTION_URL", "https://t.me/ym2812")
+DRIVE_URL = os.getenv("DRIVE_URL", "https://drive.google.com/drive/folders/1rImqoVY-lVnJP2bRxmRgDccrS_iCIswA?usp=sharing")
 OFFER_URL = os.getenv("OFFER_URL", "https://chisel-exception-1f4.notion.site/3a51af6e735580a191d7df9b8afda01e")
 
 WFP_ENABLED = bool(WFP_MERCHANT and WFP_SECRET)
 
 PRODUCTS = {
     "buy_129": ("Модуль 1 «Знай собі ціну» + воркбук", 129, PAY_URL_129),
-    "buy_699": ("Повна програма «Заяви про себе» (4 модулі)", 699, PAY_URL_699),
+    "buy_699": ("Програма «Заяви про себе» (4 модулі)", 699, PAY_URL_699),
 }  # prices in whole hryvnias
 
 # ------------------------------------------------------------------ texts
@@ -119,22 +120,22 @@ TEXT_WELCOME = (
 TEXT_FOLLOWUP = (
     "Привіт! 👋\n\n"
     "Це знову Юлія Маліч та Алеся Стоковська.\n\n"
-    "Якщо ти робиш багато, але це не конвертується в підвищення або визнання — "
-    "почни з малого.\n\n"
-    "Ми хочемо запропонувати тобі пройти Модуль 1 курсу «Заяви про себе» 🎟\n\n"
-    "Відеоурок «Сформулюй власну цінність» + практичний воркбук\n\n"
-    "Якщо ти впізнаєш хоч один пункт, це для тебе:\n"
+    "Якщо ти впізнаєш хоч один пункт — програма «Заяви про себе» для тебе:\n"
     "— роблю багато, але це не конвертується в підвищення або визнання;\n"
     "— не вмію коротко і в цифрах пояснити, який у мене вплив;\n"
     "— гублюся у важливий момент і звучу слабше, ніж я є;\n"
-    "— хочу зростання, але бракує структури і часу на довгі програми.\n\n"
-    "Цей модуль — твій швидкий старт.\n\n"
-    "Що буде всередині:\n"
-    "— формула «внесок → ефект → наступний крок» (щоб говорити про себе впевнено);\n"
-    "— як перестати знецінювати себе словами;\n"
-    "— вправи з воркбуку, щоб одразу застосувати.\n\n"
-    "⏳ Спецціна 129 грн діє тільки 3 дні.\n\n"
-    "Якщо готова зробити перший крок — натискай «Оплатити» нижче 👇"
+    "— хочу зростання, але бракує структури.\n\n"
+    "Що всередині:\n"
+    "— 4 відеолекції від менторок Юлії та Алесі;\n"
+    "— workbook до кожного модуля з практичними вправами;\n"
+    "— формула «внесок → ефект → наступний крок», щоб говорити про себе впевнено;\n"
+    "— робота з синдромом самозванця, критикою та комунікацією цінності.\n\n"
+    "Доступ до закритого каналу з усіма матеріалами — назавжди, "
+    "проходиш у своєму темпі. Вартість — 699 грн 💙\n\n"
+    "А якщо хочеш почати з малого — візьми Модуль 1 «Знай собі ціну» "
+    "(відеоурок + воркбук) за 129 грн і поверни собі відчуття власної цінності "
+    "вже цього тижня.\n\n"
+    "Обирай свій варіант 👇"
 )
 
 TEXT_ABOUT = (
@@ -170,6 +171,13 @@ TEXT_ABOUT = (
     "Готова змінити своє кар'єрне життя? 💪"
 )
 
+TEXT_AFTER_MODULE = (
+    "Оплата пройшла успішно, вітаємо! 🎉\n\n"
+    "Ось твій доступ до Модуля 1 «Знай собі ціну» — відеоурок і воркбук:\n{link}\n\n"
+    "Починай у зручний момент, а якщо захочеш пройти всю програму — "
+    "тисни /about 💙"
+)
+
 TEXT_AFTER_PAYMENT = (
     "Оплата пройшла успішно, вітаємо! 🎉\n\n"
     "Ось твій особистий доступ — приєднуйся до закритого каналу:\n{link}\n\n"
@@ -191,7 +199,7 @@ def db() -> sqlite3.Connection:
         )"""
     )
     conn.execute("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)")
-    for col in ("username TEXT", "first_name TEXT"):
+    for col in ("username TEXT", "first_name TEXT", "module_paid INTEGER DEFAULT 0"):
         try:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col}")
         except sqlite3.OperationalError:
@@ -313,7 +321,7 @@ async def wfp_webhook(request: web.Request) -> web.Response:
             except ValueError:
                 key, uid = ref, 0
             if valid and uid:
-                await send_access(tg_app.bot, uid)
+                await send_access(tg_app.bot, uid, key)
                 if ADMIN_CHAT_ID:
                     await tg_app.bot.send_message(
                         ADMIN_CHAT_ID,
@@ -349,9 +357,9 @@ def kb_extra_row() -> list:
 def kb_followup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [buy_button("buy_129", "Оплатити Модуль 1 — 129 грн 👇")],
-            [InlineKeyboardButton("Про курс — програма ℹ️", callback_data="about")],
-            [buy_button("buy_699", "Купити всю програму — 699 грн 💳")],
+            [buy_button("buy_129", "Модуль 1 — 129 грн 🎟")],
+            [buy_button("buy_699", "Вся програма — 699 грн 💳")],
+            [InlineKeyboardButton("Детальніше про програму ℹ️", callback_data="about")],
             kb_extra_row(),
         ]
     )
@@ -397,7 +405,13 @@ async def make_invite_link(bot, user_id: int) -> str:
             log.error("create_chat_invite_link failed: %s (is the bot an admin?)", e)
     return CHANNEL_LINK or "(лінк на канал ще не налаштовано — напишіть нам)"
 
-async def send_access(bot, user_id: int):
+async def send_access(bot, user_id: int, product: str = "buy_699"):
+    """Deliver what was actually bought: module -> Google Drive, program -> closed channel."""
+    if product == "buy_129":
+        with db() as conn:
+            conn.execute("UPDATE users SET module_paid=1 WHERE user_id=?", (user_id,))
+        await bot.send_message(user_id, TEXT_AFTER_MODULE.format(link=DRIVE_URL))
+        return
     set_paid(user_id, 1)
     link = await make_invite_link(bot, user_id)
     await bot.send_message(user_id, TEXT_AFTER_PAYMENT.format(link=link))
@@ -527,9 +541,9 @@ async def on_precheckout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def on_successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    await send_access(context.bot, user.id)
+    sp = update.message.successful_payment
+    await send_access(context.bot, user.id, sp.invoice_payload)
     if ADMIN_CHAT_ID:
-        sp = update.message.successful_payment
         await context.bot.send_message(
             ADMIN_CHAT_ID,
             f"💰 Оплата: {sp.total_amount / 100:.0f} {sp.currency}, "
@@ -562,9 +576,12 @@ async def cmd_grant(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = await _resolve_from_args(update, context)
     if user_id is None:
         return
+    # /grant <user> [129|699] — defaults to the full program
+    product = "buy_129" if len(context.args) > 1 and "129" in context.args[1] else "buy_699"
+    what = "Модуль 1 (Google Drive)" if product == "buy_129" else "програма (канал)"
     try:
-        await send_access(context.bot, user_id)
-        await update.message.reply_text(f"✅ Доступ надано: {user_id}")
+        await send_access(context.bot, user_id, product)
+        await update.message.reply_text(f"✅ Доступ надано: {user_id} — {what}")
     except Exception as e:
         await update.message.reply_text(f"⚠️ Не вдалося надіслати: {e}")
 
@@ -603,16 +620,17 @@ async def cmd_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with db() as conn:
         rows = conn.execute(
-            "SELECT user_id, username, first_name, paid, started_at "
-            "FROM users ORDER BY started_at DESC LIMIT 20"
+            "SELECT user_id, username, first_name, paid, started_at, "
+            "COALESCE(module_paid, 0) FROM users ORDER BY started_at DESC LIMIT 20"
         ).fetchall()
     if not rows:
         await update.message.reply_text("Поки що нікого немає.")
         return
     lines = []
-    for uid, uname, fname, paid, started in rows:
+    for uid, uname, fname, paid, started, module in rows:
         day = datetime.fromtimestamp(started, tz=timezone.utc).strftime("%d.%m %H:%M")
-        lines.append(f"{'💰' if paid else '👤'} {fname or ''} @{uname or '—'} — id {uid} — {day}")
+        mark = "💰" if paid else ("🎟" if module else "👤")
+        lines.append(f"{mark} {fname or ''} @{uname or '—'} — id {uid} — {day}")
     await update.message.reply_text("\n".join(lines))
 
 @admin_only
