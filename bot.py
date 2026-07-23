@@ -41,6 +41,7 @@ from urllib.parse import unquote_plus
 import httpx
 from aiohttp import web
 from telegram import (
+    BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LabeledPrice,
@@ -666,6 +667,18 @@ def schedule_followup(app: Application, user_id: int, started_at: int):
     app.job_queue.run_once(job_followup, max(1, t - now), data=user_id, name=f"f_{user_id}")
 
 async def post_init(app: Application):
+    # Set the command menu (more reliable than BotFather, applies to all languages)
+    try:
+        await app.bot.set_my_commands([
+            BotCommand("start", "Отримати гайд"),
+            BotCommand("about", "Програма курсу"),
+            BotCommand("question", "Задати питання"),
+            BotCommand("oferta", "Публічна оферта"),
+        ])
+        log.info("Command menu set: %s", [c.command for c in await app.bot.get_my_commands()])
+    except Exception as e:
+        log.error("set_my_commands failed: %s", e)
+
     # Re-schedule pending follow-ups after a restart (Railway redeploys, etc.)
     with db() as conn:
         rows = conn.execute(
