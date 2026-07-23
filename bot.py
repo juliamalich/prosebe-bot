@@ -377,18 +377,60 @@ def buy_button(key: str, label: str) -> InlineKeyboardButton:
 
 # ------------------------------------------------------------------ media helpers
 
+DOC_EXTS = (".pdf",)
+IMG_EXTS = (".jpg", ".jpeg", ".png", ".webp")
+
+def resolve_asset(path: str, kind: str):
+    """Find the file wherever it ended up in the repo.
+
+    Tolerates: different folder (assets/ or repo root), different extension,
+    different letter case. Order of preference: exact path -> same stem in any
+    known folder -> any file of the right type.
+    """
+    if os.path.exists(path):
+        return path
+
+    exts = DOC_EXTS if kind == "document" else IMG_EXTS
+    stem = os.path.splitext(os.path.basename(path))[0].lower()
+    folders = [d for d in (os.path.dirname(path) or ".", ".", "assets") if os.path.isdir(d)]
+    seen = set()
+
+    # pass 1: same name, any extension or case
+    for folder in folders:
+        if folder in seen:
+            continue
+        seen.add(folder)
+        for f in os.listdir(folder):
+            name, ext = os.path.splitext(f)
+            if name.lower() == stem and ext.lower() in exts:
+                found = os.path.join(folder, f)
+                log.info("resolved %s -> %s", path, found)
+                return found
+
+    # pass 2: any file of the right type
+    for folder in folders:
+        for f in sorted(os.listdir(folder)):
+            if os.path.splitext(f)[1].lower() in exts:
+                found = os.path.join(folder, f)
+                log.info("using %s as %s (expected %s)", found, kind, path)
+                return found
+    return None
+
 async def send_cached_file(chat_id, context, kv_key, path, kind, **kwargs):
     """Send a document/photo, caching Telegram's file_id after the first upload."""
     cached = kv_get(kv_key)
     send = context.bot.send_document if kind == "document" else context.bot.send_photo
     if cached:
         return await send(chat_id, cached, **kwargs)
-    if not os.path.exists(path):
-        log.warning("%s not found at %s — skipped", kind, path)
+    resolved = resolve_asset(path, kind)
+    if not resolved:
+        log.warning("%s not found at %s (and no alternative in that folder) — skipped", kind, path)
         return None
+    path = resolved
     with open(path, "rb") as f:
         msg = await send(chat_id, f, **kwargs)
     file_id = msg.document.file_id if kind == "document" else msg.photo[-1].file_id
+    log.info("uploaded %s from %s, cached file_id", kind, path)
     kv_set(kv_key, file_id)
     return msg
 
@@ -636,16 +678,32 @@ async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_only
 async def cmd_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/files — diagnostic: show what's actually present in the deployed container."""
-    lines = [f"📂 Робоча директорія: {os.getcwd()}", ""]
-    for root_name in (".", "assets"):
-        if os.path.isdir(root_name):
-            items = sorted(os.listdir(root_name))
-            lines.append(f"{root_name}/: " + (", ".join(items) if items else "(порожньо)"))
+    lines = [f"📂 {os.getcwd()}", ""]
+    for folder in (".", "assets"):
+        if os.path.isdir(folder):
+            items = sorted(os.listdir(folder))
+            if items:
+                shown = []
+                for f in items:
+                    p = os.path.join(folder, f)
+                    if os.path.isfile(p):
+                        shown.append(f"{f} ({os.path.getsize(p) // 1024} КБ)")
+                    else:
+                        shown.append(f"{f}/")
+                lines.append(f"{folder}/:\n  " + "\n  ".join(shown))
+            else:
+                lines.append(f"{folder}/: (порожньо)")
         else:
-            lines.append(f"{root_name}/: не існує")
+            lines.append(f"{folder}/: не існує")
+        lines.append("")
+
+    pdf = resolve_asset(PDF_PATH, "document")
+    photo = resolve_asset(PHOTO_PATH, "photo")
+    lines.append(f"PDF: {pdf or '❌ не знайдено (шукала ' + PDF_PATH + ')'}")
+    lines.append(f"Фото: {photo or '❌ не знайдено (шукала ' + PHOTO_PATH + ')'}")
     lines.append("")
-    lines.append(f"PDF_PATH={PDF_PATH} → існує: {os.path.exists(PDF_PATH)}")
-    lines.append(f"PHOTO_PATH={PHOTO_PATH} → існує: {os.path.exists(PHOTO_PATH)}")
+    lines.append(f"Кеш file_id: pdf={'є' if kv_get('pdf_file_id') else 'немає'}, "
+                 f"photo={'є' if kv_get('photo_file_id') else 'немає'}")
     await update.message.reply_text("\n".join(lines))
 
 @admin_only
