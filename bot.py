@@ -707,6 +707,57 @@ async def cmd_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 @admin_only
+async def cmd_diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/diag — check channel access: is CHANNEL_ID set, is the bot admin, can it invite?"""
+    out = []
+    out.append(f"CHANNEL_ID = {CHANNEL_ID or '❌ НЕ ЗАДАНО (0)'}")
+    out.append(f"CHANNEL_LINK = {CHANNEL_LINK or '(порожньо)'}")
+    out.append("")
+
+    if not CHANNEL_ID:
+        out.append("➡️ CHANNEL_ID не задано в Railway. Додайте -100... і передеплойте.")
+        await update.message.reply_text("\n".join(out))
+        return
+
+    # 1. Can the bot see the channel at all?
+    try:
+        chat = await context.bot.get_chat(CHANNEL_ID)
+        out.append(f"✅ Канал видно: «{chat.title}»")
+    except Exception as e:
+        out.append(f"❌ get_chat не вдалося: {e}")
+        out.append("➡️ Схоже, CHANNEL_ID неправильний або бота немає в каналі зовсім.")
+        await update.message.reply_text("\n".join(out))
+        return
+
+    # 2. Is the bot an admin with invite rights?
+    try:
+        me = await context.bot.get_me()
+        member = await context.bot.get_chat_member(CHANNEL_ID, me.id)
+        out.append(f"Статус бота в каналі: {member.status}")
+        can_invite = getattr(member, "can_invite_users", None)
+        out.append(f"Право «запрошувати за посиланням»: {can_invite}")
+        if member.status not in ("administrator", "creator"):
+            out.append("➡️ Бот НЕ адміністратор каналу. Додайте його адміном.")
+        elif not can_invite:
+            out.append("➡️ Бот адмін, але БЕЗ права «Запрошувати за посиланням». Увімкніть це право.")
+    except Exception as e:
+        out.append(f"❌ get_chat_member не вдалося: {e}")
+
+    out.append("")
+
+    # 3. Actually try to create an invite link
+    try:
+        link = await context.bot.create_chat_invite_link(
+            chat_id=CHANNEL_ID, member_limit=1, name="diag test"
+        )
+        out.append(f"✅ Запрошення СТВОРЕНО успішно:\n{link.invite_link}")
+        out.append("Усе працює — доступ до каналу видаватиметься автоматично.")
+    except Exception as e:
+        out.append(f"❌ Створити запрошення НЕ вдалося: {e}")
+
+    await update.message.reply_text("\n".join(out))
+
+@admin_only
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/broadcast <текст> — send text to everyone.
     Or reply /broadcast to any message (photo, formatted text) to copy it to everyone."""
@@ -786,6 +837,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("about", cmd_about))
     app.add_handler(CommandHandler("question", cmd_question))
+    app.add_handler(CommandHandler("diag", cmd_diag))
     app.add_handler(CommandHandler("oferta", cmd_oferta))
     app.add_handler(CommandHandler("grant", cmd_grant))
     app.add_handler(CommandHandler("link", cmd_link))
