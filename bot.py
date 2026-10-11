@@ -675,9 +675,29 @@ async def on_successful_payment(update: Update, context: ContextTypes.DEFAULT_TY
 
 def admin_only(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if ADMIN_CHAT_ID and update.effective_user.id == ADMIN_CHAT_ID:
+        uid = update.effective_user.id
+        if ADMIN_CHAT_ID and uid == ADMIN_CHAT_ID:
             await func(update, context)
+        else:
+            # no longer silent — tell why the admin command didn't run
+            await update.message.reply_text(
+                f"⛔ Ця команда лише для адміна.\n"
+                f"Твій id: {uid}\n"
+                f"ADMIN_CHAT_ID у боті: {ADMIN_CHAT_ID or 'не задано (0)'}\n"
+                f"{'➡️ Додай ADMIN_CHAT_ID у Railway.' if not ADMIN_CHAT_ID else '➡️ Впиши цей id у ADMIN_CHAT_ID, якщо це ти.'}"
+            )
     return wrapper
+
+async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/myid — works for EVERYONE. Shows your id and whether the deployed code is current."""
+    uid = update.effective_user.id
+    is_admin = bool(ADMIN_CHAT_ID and uid == ADMIN_CHAT_ID)
+    await update.message.reply_text(
+        f"👤 Твій Telegram id: {uid}\n"
+        f"ADMIN_CHAT_ID у боті: {ADMIN_CHAT_ID or 'не задано'}\n"
+        f"Ти адмін: {'так ✅' if is_admin else 'ні ❌'}\n\n"
+        f"(Якщо ти бачиш це повідомлення — свіжий код задеплоєно.)"
+    )
 
 async def _resolve_from_args(update, context):
     if not context.args:
@@ -921,6 +941,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("about", cmd_about))
     app.add_handler(CommandHandler("question", cmd_question))
+    app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(CommandHandler("diag", cmd_diag))
     app.add_handler(CommandHandler("oferta", cmd_oferta))
     app.add_handler(CommandHandler("grant", cmd_grant))
