@@ -278,7 +278,22 @@ async def wfp_create_invoice(key: str, user_id: int):
     async with httpx.AsyncClient(timeout=25) as client:
         r = await client.post("https://api.wayforpay.com/api", json=payload)
         data = r.json()
-    return data.get("invoiceUrl"), data
+    return data.get("invoiceUrl"), data, ref
+
+
+async def wfp_check_status(ref: str) -> dict:
+    """Ask WayForPay directly whether an order is paid (CHECK_STATUS)."""
+    signature = wfp_sign([WFP_MERCHANT, ref])
+    payload = {
+        "transactionType": "CHECK_STATUS",
+        "merchantAccount": WFP_MERCHANT,
+        "orderReference": ref,
+        "merchantSignature": signature,
+        "apiVersion": 1,
+    }
+    async with httpx.AsyncClient(timeout=25) as client:
+        r = await client.post("https://api.wayforpay.com/api", json=payload)
+        return r.json()
 
 def _norm(v) -> str:
     """Normalize a callback value for signature verification."""
@@ -291,6 +306,7 @@ def _norm(v) -> str:
 async def wfp_webhook(request: web.Request) -> web.Response:
     """WayForPay calls this URL after every (successful) payment."""
     raw = await request.text()
+    log.info("WFP webhook HIT: %s", raw[:500])
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
@@ -530,22 +546,84 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif data in PRODUCTS:
         await start_payment(chat_id, data, context)
+    elif data.startswith("paid:"):
+        await handle_paid_click(chat_id, data.split(":", 1)[1], context)
+
+
+async def handle_paid_click(chat_id: int, ref: str, context: ContextTypes.DEFAULT_TYPE):
+    """User pressed 'I paid' — verify with WayForPay directly and grant access."""
+    await context.bot.send_message(chat_id, "Перевіряю оплату, одну секунду… ⏳")
+    try:
+        res = await wfp_check_status(ref)
+    except Exception as e:
+        log.error("CHECK_STATUS failed for %s: %s", ref, e)
+        await context.bot.send_message(
+            chat_id,
+            "Не вдалося перевірити оплату просто зараз 😔 Спробуй ще раз за хвилину "
+            "або напиши нам — кнопка «Задати питання».",
+        )
+        return
+
+    status = res.get("transactionStatus")
+    log.info("CHECK_STATUS %s -> %s", ref, status)
+
+    if status == "Approved":
+        if kv_get(f"wfp_{ref}") is not None:
+            # already granted earlier (e.g. by webhook) — resend the link anyway
+            pass
+        kv_set(f"wfp_{ref}", "1")
+        try:
+            key = ref.split("-")[0]
+        except Exception:
+            key = "buy_699"
+        await send_access(context.bot, chat_id, key)
+        if ADMIN_CHAT_ID:
+            await context.bot.send_message(
+                ADMIN_CHAT_ID,
+                f"💰 Оплата підтверджена (кнопка «Я оплатив»): {res.get('amount')} грн, "
+                f"продукт {key}, користувач id {chat_id}.",
+            )
+    elif status in ("Pending", "InProcessing", "WaitingAuthComplete"):
+        await context.bot.send_message(
+            chat_id,
+            "Оплата ще обробляється банком ⏳ Зачекай 1–2 хвилини і натисни «Я оплатив(ла)» ще раз.",
+        )
+    else:
+        await context.bot.send_message(
+            chat_id,
+            "Поки не бачу успішної оплати за цим рахунком 🤔\n"
+            "Якщо ти щойно оплатила — зачекай хвилину і натисни ще раз. "
+            "Якщо гроші списались, а доступу немає — напиши нам, кнопка «Задати питання».",
+        )
+        if ADMIN_CHAT_ID:
+            await context.bot.send_message(
+                ADMIN_CHAT_ID,
+                f"ℹ️ «Я оплатив» від id {chat_id}, замовлення {ref}, статус WFP: {status}. "
+                f"Якщо оплата насправді є — /grant {chat_id}"
+                + (" 129" if ref.startswith("buy_129") else ""),
+            )
 
 async def start_payment(chat_id: int, key: str, context: ContextTypes.DEFAULT_TYPE):
     title, amount, url = PRODUCTS[key]
 
     if WFP_ENABLED:
         try:
-            invoice_url, raw = await wfp_create_invoice(key, chat_id)
+            invoice_url, raw, ref = await wfp_create_invoice(key, chat_id)
         except Exception as e:
-            invoice_url, raw = None, str(e)
+            invoice_url, raw, ref = None, str(e), None
         if invoice_url:
-            kb = InlineKeyboardMarkup(
-                [[InlineKeyboardButton(f"Оплатити {amount} грн 💳", url=invoice_url)]]
-            )
+            # remember this order so the "I paid" button knows what to check
+            kv_set(f"order_{chat_id}", ref)
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"Оплатити {amount} грн 💳", url=invoice_url)],
+                [InlineKeyboardButton("Я оплатив(ла) ✅", callback_data=f"paid:{ref}")],
+            ])
             await context.bot.send_message(
                 chat_id,
-                f"Рахунок створено: {title}.\nНатискай кнопку, щоб перейти до оплати 👇",
+                f"Рахунок створено: {title}.\n\n"
+                f"1️⃣ Натисни «Оплатити» і сплати карткою 👇\n"
+                f"2️⃣ Після оплати повернись сюди й натисни «Я оплатив(ла)» — "
+                f"і я одразу надішлю доступ.",
                 reply_markup=kb,
             )
         else:
@@ -712,6 +790,12 @@ async def cmd_diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     out = []
     out.append(f"CHANNEL_ID = {CHANNEL_ID or '❌ НЕ ЗАДАНО (0)'}")
     out.append(f"CHANNEL_LINK = {CHANNEL_LINK or '(порожньо)'}")
+    out.append("")
+    out.append("— WayForPay webhook —")
+    out.append(f"PUBLIC_URL = {PUBLIC_URL or '❌ НЕ ЗАДАНО'}")
+    out.append(f"serviceUrl (куди WFP шле callback) = "
+               f"{(PUBLIC_URL.rstrip('/') + '/wfp') if PUBLIC_URL else '❌ порожній'}")
+    out.append(f"WFP підключено: {'так' if WFP_ENABLED else '❌ ні'}")
     out.append("")
 
     if not CHANNEL_ID:
