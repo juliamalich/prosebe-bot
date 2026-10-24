@@ -699,6 +699,22 @@ async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"(Якщо ти бачиш це повідомлення — свіжий код задеплоєно.)"
     )
 
+async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Catch posts in any channel where the bot is admin, so we can learn the channel's real id."""
+    chat = update.effective_chat
+    log.info("CHANNEL POST seen: id=%s title=%r", chat.id, chat.title)
+    if ADMIN_CHAT_ID:
+        try:
+            await context.bot.send_message(
+                ADMIN_CHAT_ID,
+                f"📡 Бачу пост у каналі:\n"
+                f"Назва: {chat.title}\n"
+                f"CHANNEL_ID цього каналу: {chat.id}\n\n"
+                f"Якщо це твій закритий канал — впиши це число у змінну CHANNEL_ID у Railway.",
+            )
+        except Exception as e:
+            log.error("could not notify admin of channel id: %s", e)
+
 async def _resolve_from_args(update, context):
     if not context.args:
         await update.message.reply_text("Вкажіть користувача: id або @username")
@@ -772,6 +788,35 @@ async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mark = "💰" if paid else ("🎟" if module else "👤")
         lines.append(f"{mark} {fname or ''} @{uname or '—'} — id {uid} — {day}")
     await update.message.reply_text("\n".join(lines))
+
+@admin_only
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/stats — totals: how many joined, bought the program, bought the module."""
+    now = datetime.now(timezone.utc)
+    today_start = int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    week_ago = int((now.timestamp()) - 7 * 86400)
+    with db() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        paid = conn.execute("SELECT COUNT(*) FROM users WHERE paid=1").fetchone()[0]
+        module = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE COALESCE(module_paid,0)=1"
+        ).fetchone()[0]
+        today = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE started_at>=?", (today_start,)
+        ).fetchone()[0]
+        last7 = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE started_at>=?", (week_ago,)
+        ).fetchone()[0]
+    conv = f"{paid / total * 100:.1f}%" if total else "—"
+    await update.message.reply_text(
+        f"📊 Статистика бота\n\n"
+        f"👤 Усього запустили бота: {total}\n"
+        f"   • сьогодні: {today}\n"
+        f"   • за 7 днів: {last7}\n\n"
+        f"💰 Купили програму (699): {paid}\n"
+        f"🎟 Купили Модуль 1 (129): {module}\n\n"
+        f"Конверсія в програму: {conv}"
+    )
 
 @admin_only
 async def cmd_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -948,11 +993,13 @@ def main():
     app.add_handler(CommandHandler("link", cmd_link))
     app.add_handler(CommandHandler("revoke", cmd_revoke))
     app.add_handler(CommandHandler("users", cmd_users))
+    app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("files", cmd_files))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(PreCheckoutQueryHandler(on_precheckout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_successful_payment))
+    app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, on_channel_post))
 
     log.info("Bot starting (polling)…  payments: %s",
              "WayForPay" if WFP_ENABLED else ("Telegram Payments" if PROVIDER_TOKEN else "links/manual"))
